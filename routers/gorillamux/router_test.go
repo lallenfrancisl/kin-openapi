@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/getkin/kin-openapi/openapi3"
-	"github.com/getkin/kin-openapi/routers"
+	"github.com/lallenfrancisl/kin-openapi/openapi3"
+	"github.com/lallenfrancisl/kin-openapi/routers"
 )
 
 func TestRouter(t *testing.T) {
