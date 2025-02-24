@@ -122,14 +122,14 @@ func NewGenerator(opts ...Option) *Generator {
 	}
 }
 
-func (g *Generator) GenerateSchemaRef(t reflect.Type) (*openapi3.SchemaRef, error) {
+func (g *Generator) GenerateSchemaRef(t reflect.Type, v reflect.Value) (*openapi3.SchemaRef, error) {
 	//check generatorOpt consistency here
-	return g.generateSchemaRefFor(nil, t, "_root", "")
+	return g.generateSchemaRefFor(nil, t, v, "_root", "")
 }
 
 // NewSchemaRefForValue uses reflection on the given value to produce a SchemaRef, and updates a supplied map with any dependent component schemas if they lead to cycles
 func (g *Generator) NewSchemaRefForValue(value any, schemas openapi3.Schemas) (*openapi3.SchemaRef, error) {
-	ref, err := g.GenerateSchemaRef(reflect.TypeOf(value))
+	ref, err := g.GenerateSchemaRef(reflect.TypeOf(value), reflect.ValueOf(value))
 	if err != nil {
 		return nil, err
 	}
@@ -155,12 +155,12 @@ func (g *Generator) NewSchemaRefForValue(value any, schemas openapi3.Schemas) (*
 	return ref, nil
 }
 
-func (g *Generator) generateSchemaRefFor(parents []*theTypeInfo, t reflect.Type, name string, tag reflect.StructTag) (*openapi3.SchemaRef, error) {
+func (g *Generator) generateSchemaRefFor(parents []*theTypeInfo, t reflect.Type, v reflect.Value, name string, tag reflect.StructTag) (*openapi3.SchemaRef, error) {
 	if ref := g.Types[t]; ref != nil && g.opts.schemaCustomizer == nil {
 		g.SchemaRefs[ref]++
 		return ref, nil
 	}
-	ref, err := g.generateWithoutSaving(parents, t, name, tag)
+	ref, err := g.generateWithoutSaving(parents, t, v, name, tag)
 	if _, ok := err.(*ExcludeSchemaSentinel); ok {
 		// This schema should not be included in the final output
 		return nil, nil
@@ -188,7 +188,7 @@ func getStructField(t reflect.Type, fieldInfo theFieldInfo) reflect.StructField 
 	return ff
 }
 
-func (g *Generator) generateWithoutSaving(parents []*theTypeInfo, t reflect.Type, name string, tag reflect.StructTag) (*openapi3.SchemaRef, error) {
+func (g *Generator) generateWithoutSaving(parents []*theTypeInfo, t reflect.Type, rv reflect.Value, name string, tag reflect.StructTag) (*openapi3.SchemaRef, error) {
 	typeInfo := getTypeInfo(t)
 	for _, parent := range parents {
 		if parent == typeInfo {
@@ -210,8 +210,10 @@ func (g *Generator) generateWithoutSaving(parents []*theTypeInfo, t reflect.Type
 	if strings.HasSuffix(t.Name(), "Ref") {
 		_, a := t.FieldByName("Ref")
 		v, b := t.FieldByName("Value")
+		valueRV := rv.FieldByName("Value")
+
 		if a && b {
-			vs, err := g.generateSchemaRefFor(parents, v.Type, name, tag)
+			vs, err := g.generateSchemaRefFor(parents, v.Type, valueRV, name, tag)
 			if err != nil {
 				if _, ok := err.(*CycleError); ok && !g.opts.throwErrorOnCycle {
 					g.SchemaRefs[vs]++
@@ -296,7 +298,7 @@ func (g *Generator) generateWithoutSaving(parents []*theTypeInfo, t reflect.Type
 			}
 		} else {
 			schema.Type = &openapi3.Types{"array"}
-			items, err := g.generateSchemaRefFor(parents, t.Elem(), name, tag)
+			items, err := g.generateSchemaRefFor(parents, t.Elem(), rv, name, tag)
 			if err != nil {
 				if _, ok := err.(*CycleError); ok && !g.opts.throwErrorOnCycle {
 					items = g.generateCycleSchemaRef(t.Elem(), schema)
@@ -312,17 +314,42 @@ func (g *Generator) generateWithoutSaving(parents []*theTypeInfo, t reflect.Type
 
 	case reflect.Map:
 		schema.Type = &openapi3.Types{"object"}
-		additionalProperties, err := g.generateSchemaRefFor(parents, t.Elem(), name, tag)
-		if err != nil {
-			if _, ok := err.(*CycleError); ok && !g.opts.throwErrorOnCycle {
-				additionalProperties = g.generateCycleSchemaRef(t.Elem(), schema)
-			} else {
-				return nil, err
+
+		if rv.Kind() == reflect.Map && !rv.IsZero() {
+			// TODO: Refactor this into a reusable function or add support for this in getTypeInfo
+			for rv.Kind() == reflect.Ptr {
+				rv = rv.Elem()
 			}
-		}
-		if additionalProperties != nil {
-			g.SchemaRefs[additionalProperties]++
-			schema.AdditionalProperties = openapi3.AdditionalProperties{Schema: additionalProperties}
+
+			mapKeys := rv.MapKeys()
+
+			for _, i := range mapKeys {
+				v := rv.MapIndex(i)
+
+				for v.Kind() == reflect.Ptr || v.Kind() == reflect.Interface {
+					v = v.Elem()
+				}
+
+				schemaRef, err := g.generateSchemaRefFor(parents, v.Type(), v, i.String(), tag)
+				if err != nil {
+					return nil, err
+				}
+
+				schema.WithPropertyRef(i.String(), schemaRef)
+			}
+		} else {
+			additionalProperties, err := g.generateSchemaRefFor(parents, t.Elem(), rv, name, tag)
+			if err != nil {
+				if _, ok := err.(*CycleError); ok && !g.opts.throwErrorOnCycle {
+					additionalProperties = g.generateCycleSchemaRef(t.Elem(), schema)
+				} else {
+					return nil, err
+				}
+			}
+			if additionalProperties != nil {
+				g.SchemaRefs[additionalProperties]++
+				schema.AdditionalProperties = openapi3.AdditionalProperties{Schema: additionalProperties}
+			}
 		}
 
 	case reflect.Struct:
@@ -330,6 +357,11 @@ func (g *Generator) generateWithoutSaving(parents []*theTypeInfo, t reflect.Type
 			schema.Type = &openapi3.Types{"string"}
 			schema.Format = "date-time"
 		} else {
+			// TODO: Refactor this into a reusable function or add support for this in getTypeInfo
+			for rv.Kind() == reflect.Ptr {
+				rv = rv.Elem()
+			}
+
 			typeName := g.generateTypeName(t)
 
 			if _, ok := g.componentSchemaRefs[typeName]; ok && g.opts.exportComponentSchemas.ExportComponentSchemas {
@@ -345,10 +377,16 @@ func (g *Generator) generateWithoutSaving(parents []*theTypeInfo, t reflect.Type
 				}
 				// If asked, try to use yaml tag
 				fieldName, fType := fieldInfo.JSONName, fieldInfo.Type
+
+				var fValue reflect.Value = rv
+				if rv.Kind() == reflect.Struct {
+					fValue = rv.FieldByName(fieldName)
+				}
+
 				if !fieldInfo.HasJSONTag && g.opts.useAllExportedFields {
 					// Handle anonymous fields/embedded structs
 					if t.Field(fieldInfo.Index[0]).Anonymous {
-						ref, err := g.generateSchemaRefFor(parents, fType, fieldName, tag)
+						ref, err := g.generateSchemaRefFor(parents, fType, fValue, fieldName, tag)
 						if err != nil {
 							if _, ok := err.(*CycleError); ok && !g.opts.throwErrorOnCycle {
 								ref = g.generateCycleSchemaRef(fType, schema)
@@ -375,7 +413,7 @@ func (g *Generator) generateWithoutSaving(parents []*theTypeInfo, t reflect.Type
 					fieldTag = ff.Tag
 				}
 
-				ref, err := g.generateSchemaRefFor(parents, fType, fieldName, fieldTag)
+				ref, err := g.generateSchemaRefFor(parents, fType, fValue, fieldName, fieldTag)
 				if err != nil {
 					if _, ok := err.(*CycleError); ok && !g.opts.throwErrorOnCycle {
 						ref = g.generateCycleSchemaRef(fType, schema)

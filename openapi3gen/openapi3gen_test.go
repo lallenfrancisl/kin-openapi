@@ -275,7 +275,7 @@ func ExampleGenerator_GenerateSchemaRef() {
 
 	generator := openapi3gen.NewGenerator(openapi3gen.UseAllExportedFields())
 
-	schemaRef, err := generator.GenerateSchemaRef(reflect.TypeOf(instance))
+	schemaRef, err := generator.GenerateSchemaRef(reflect.TypeOf(instance), reflect.ValueOf(instance))
 	if err != nil {
 		panic(err)
 	}
@@ -319,7 +319,7 @@ func TestEmbeddedPointerStructs(t *testing.T) {
 
 	generator := openapi3gen.NewGenerator(openapi3gen.UseAllExportedFields())
 
-	schemaRef, err := generator.GenerateSchemaRef(reflect.TypeOf(instance))
+	schemaRef, err := generator.GenerateSchemaRef(reflect.TypeOf(instance), reflect.ValueOf(instance))
 	require.NoError(t, err)
 
 	var ok bool
@@ -355,7 +355,7 @@ func TestEmbeddedPointerStructsWithSchemaCustomizer(t *testing.T) {
 
 	generator := openapi3gen.NewGenerator(openapi3gen.UseAllExportedFields(), customizerOpt)
 
-	schemaRef, err := generator.GenerateSchemaRef(reflect.TypeOf(instance))
+	schemaRef, err := generator.GenerateSchemaRef(reflect.TypeOf(instance), reflect.ValueOf(instance))
 	require.NoError(t, err)
 
 	var ok bool
@@ -381,7 +381,7 @@ func TestCyclicReferences(t *testing.T) {
 
 	generator := openapi3gen.NewGenerator(openapi3gen.UseAllExportedFields())
 
-	schemaRef, err := generator.GenerateSchemaRef(reflect.TypeOf(instance))
+	schemaRef, err := generator.GenerateSchemaRef(reflect.TypeOf(instance), reflect.ValueOf(instance))
 	require.NoError(t, err)
 
 	require.NotNil(t, schemaRef.Value.Properties["FieldCycle"])
