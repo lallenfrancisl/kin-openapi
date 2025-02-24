@@ -169,7 +169,10 @@ func (g *Generator) generateSchemaRefFor(parents []*theTypeInfo, t reflect.Type,
 		return nil, err
 	}
 	if ref != nil {
-		g.Types[t] = ref
+		if v.Kind() != reflect.Map {
+			g.Types[t] = ref
+		}
+
 		g.SchemaRefs[ref]++
 	}
 	return ref, nil
